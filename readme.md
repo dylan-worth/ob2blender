@@ -20,7 +20,7 @@ Companion thread on Lost City forums: https://lostcity.rs/t/ob2blender-lost-city
 ## Installation Instructions
 1. **Installation:** Download the plugin and install it in Blender following the standard plugin installation process.
    * **You may need to rename the folder manually, i.e. ob2blender-main to ob2blender.**
-3. **Importing Models:** Select file->import/export->Runescape Model (.ob2)
+3. **Importing Models:** Select file->import/export->Runescape Model (.ob2). You can import up to 50 models at a time.
 
 ## Basic Instructions
 1. Import an .ob2 format model using Import -> RuneScape Model (.ob2).
@@ -43,8 +43,13 @@ Assuming no errors, your model should work in-game when implemented!
 	* Intended for use with Lost City Model and Anim Editor's color picker tool, as well as recolors in Lost City config files.
     * You can also create an RGB15 material using the toolbar!
 
+<img width="897" height="565" alt="image" src="https://github.com/user-attachments/assets/f73373e2-d98a-4ce0-ab41-3c99e8facd91" />
+
 ## Instructions
 * Material colors rely on diffuse_color, i.e. viewport display color. Set all material colors there.
+* RuneScape colors are encoded as an 'HSL16' short - 6 bits for Hue (0 - 31), 3 bits for Saturation (0 - 7), and 7 bits for Lightness (0 - 63). This means that, on export, these values set on your materials will be rounded to the nearest fraction respective to the bits allotted.
+	* ex. a Hue value of 0.532 will be rounded to 0.516: 0.532 * 31 = 16.492, which rounds to 16. 16 / 31 = 0.516.
+ 	* This color compression formula will affect Saturation the most, since it has the smallest range of values, so keep this in mind while picking your colors. If the values are too close, they may round to the same value on export, making two materials that look different in Blender look the same in-game.
 * All vertex values (x, y, z) will round to the nearest integer when exporting. The integer values of an imported .ob2 in Blender are the true values encoded in the file. 
 	Press N in Blender to view the values of a selected vertex.
 * Face labels, vertex labels, priorities, and alpha are all controlled by the Attribute system.
@@ -74,10 +79,7 @@ Assuming everything was done properly, your textured model should render correct
 
 
 ## Known Issues
-* Beware of naming when exporting your models. They are saved as object_name.ob2 and so may overwrite files in the directory. What you type in the file name text box does nothing.
-* Sometimes, when importing an .ob2 file, vertex 0 is degenerate and unselectable. **Beware**: Certain operations on geometry including this vertex, like using Knife on an edge connected to it, will cause Blender to crash. <img width="484" height="490" alt="image" src="https://github.com/user-attachments/assets/171ffc32-22ea-479f-8840-467327312465" />
-
-*Solution: put a new vertex at the same position and merge. It will not affect the rest of your model, but make sure the VSKIN attribute is the same if it matters.
+* Beware of naming when exporting your models. They are saved as object_name.ob2 and so may overwrite files in the directory, so confirm the overwrite dialogue box before exporting.
 * Models are mirrored horizontally compared to how they are imported in Lost City Model and Anim Editor. Please bear this in mind when making things like arm and leg models.
 * RGB15 conversion can be janky - likely due to off-by-one rounding errors.
 * Texture implementation is not yet perfect - RuneScape uses a so-called PMN or vector texturing system as opposed to conventional UV, which Blender uses, which can cause complications with conversion. Some faces with texture assigned may lose them. Working on solutions to these problems.
@@ -90,6 +92,7 @@ Assuming everything was done properly, your textured model should render correct
 
 *Special thanks to Tamateea for providing the basis of this project.*
 
+<img width="978" height="398" alt="image" src="https://github.com/user-attachments/assets/6ceb5688-9849-4cf6-9fe7-7fad00d410d3" />
 
 
 
