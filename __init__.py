@@ -94,6 +94,34 @@ class ImportOB2(Operator, ImportHelper):
         
         return {'FINISHED'}
 
+class ExportOB2Confirm(Operator):
+    """Confirmation dialog for overwriting existing .ob2 files"""
+    bl_idname = "export.model_confirm"
+    bl_label = "Overwrite Existing Files?"
+    bl_options = {'INTERNAL'}
+
+    directory: StringProperty(options={'HIDDEN'}) # type: ignore
+
+    _files = []
+
+    def execute(self, context):
+        export_model.export_to_ob2(self.directory, False)
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=400)
+
+    def draw(self, context):
+        layout = self.layout
+        total = len(ExportOB2Confirm._files)
+        layout.label(text="The following files already exist:", icon='ERROR')
+        for f in ExportOB2Confirm._files[:50]:
+            layout.label(text=f"    {f}")
+        if total > 50:
+            layout.label(text=f"    ... plus {total - 50} more files")
+        layout.separator()
+        layout.label(text="Press OK to overwrite, or cancel to abort.")
+
 class ExportOB2(Operator, ExportHelper):
     bl_idname = "export.model"
     bl_label = "Export Model"
@@ -105,7 +133,21 @@ class ExportOB2(Operator, ExportHelper):
     def execute( self, context ):
         directory = os.path.dirname(self.filepath)
         self.directory = directory
-        self.export_as_one = True
+
+        # Check for existing files that would be overwritten
+        selected_objects = bpy.context.selected_objects
+        if selected_objects:
+            conflicting = []
+            for obj in selected_objects:
+                export_path = os.path.join(directory, f"{obj.name}.ob2")
+                if os.path.exists(export_path):
+                    conflicting.append(f"{obj.name}.ob2")
+
+            if conflicting:
+                ExportOB2Confirm._files = conflicting
+                bpy.ops.export.model_confirm('INVOKE_DEFAULT', directory=directory)
+                return {'FINISHED'}
+
         export_model.export_to_ob2(self.directory, False)
         return {'FINISHED'}
 # ################################################################
@@ -770,6 +812,7 @@ class OB2_OT_apply_label(Operator):
 # Register classes
 classes = (
     ImportOB2,
+    ExportOB2Confirm,
     ExportOB2,
     OB2_OT_main_panel,
     OB2_OT_select_labeled,
