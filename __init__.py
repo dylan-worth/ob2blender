@@ -39,13 +39,60 @@ from bpy.types import Operator
 class ImportOB2(Operator, ImportHelper):
     bl_idname = "import.model"
     bl_label = "Import Model"
-    bl_description = "Import a Runescape .ob2 model file"
+    bl_description = "Import Runescape .ob2 model file(s). Maximum of 50."
 
     filename_ext = ".ob2"
-    filter_glob = StringProperty( default="*.ob2", options={"HIDDEN"})
+    filter_glob = StringProperty(default="*.ob2", options={"HIDDEN"})
     
-    def execute( self, context ):
-        return import_model.load(self)
+    # Enable multiple file selection
+    files: bpy.props.CollectionProperty(
+        type=bpy.types.OperatorFileListElement,
+        options={'HIDDEN', 'SKIP_SAVE'}
+    ) # type: ignore
+    
+    directory: StringProperty(
+        subtype='DIR_PATH',
+        options={'HIDDEN', 'SKIP_SAVE'}
+    ) # type: ignore
+    
+    def execute(self, context):
+        import_count = 0
+        failed_count = 0
+        
+        # If multiple files selected, use files collection
+        if self.files:
+            # Limit to 50 files maximum to prevent catastrophe
+            files_to_import = self.files[:50]  # Take only first 50
+            if len(self.files) > 50:
+                self.report({'WARNING'}, f"Selected {len(self.files)} files. Importing first 50 only.")
+            
+            for file_elem in files_to_import:
+                filepath = os.path.join(self.directory, file_elem.name)
+                try:
+                    mesh = import_model.read_mesh(filepath)
+                    import_model.create_blender_mesh(mesh, filepath)
+                    import_count += 1
+                except Exception as e:
+                    print(f"Failed to import {file_elem.name}: {e}")
+                    failed_count += 1
+        else:
+            # Single file selection (fallback)
+            try:
+                mesh = import_model.read_mesh(self.filepath)
+                import_model.create_blender_mesh(mesh, self.filepath)
+                import_count += 1
+            except Exception as e:
+                print(f"Failed to import: {e}")
+                failed_count += 1
+        
+        if import_count > 0:
+            bpy.ops.ed.undo_push(message=f"Import {import_count} model(s)")
+            self.report({'INFO'}, f"Imported {import_count} model(s)")
+        
+        if failed_count > 0:
+            self.report({'WARNING'}, f"{failed_count} file(s) failed to import")
+        
+        return {'FINISHED'}
 
 class ExportOB2(Operator, ExportHelper):
     bl_idname = "export.model"
@@ -73,6 +120,7 @@ def menu_func_export( self, context ):
 
 ## Timer-based attribute picker - polls selection while any picker is enabled ##
 _picker_timer_running = False
+_picker_updating_value = False  # Flag to indicate picker is updating the value (not user)
 
 def _picker_timer():
     """Timer callback that reads selection attributes while pickers are active."""
@@ -101,6 +149,7 @@ def _start_picker_timer():
 
 def _read_active_attributes():
     """Read attributes from active vertex/face and update scene labels."""
+    global _picker_updating_value
     scene = bpy.context.scene
     obj = bpy.context.active_object
 
@@ -137,7 +186,9 @@ def _read_active_attributes():
                     break
         
         if v_elem is not None:
+            _picker_updating_value = True  # Set flag before updating
             scene.ob2_vskin_label = 0 if not vskin_layer else v_elem[vskin_layer]
+            _picker_updating_value = False  # Clear flag after updating
             # 0 (Default) if no vskin attribute, otherwise assign vskin of active vertex.
 
     # Find active face
@@ -158,12 +209,14 @@ def _read_active_attributes():
 
     # Update face attrs from face
     if f_elem is not None:
+        _picker_updating_value = True  # Set flag before updating
         if getattr(scene, "ob2_tskin_pick", False):
             scene.ob2_tskin_label = 0 if not tskin_layer else f_elem[tskin_layer]
         if getattr(scene, "ob2_pri_pick", False):
             scene.ob2_pri_label = 0 if not pri_layer else f_elem[pri_layer]
         if getattr(scene, "ob2_alpha_pick", False):
             scene.ob2_alpha_label = 0 if not alpha_layer else f_elem[alpha_layer]
+        _picker_updating_value = False  # Clear flag after updating
     
     for area in bpy.context.screen.areas:
         if area.type == 'VIEW_3D':
@@ -766,6 +819,34 @@ def _update_ob2_alpha_foldout(self, context):
     else:
         context.scene.ob2_alpha_pick = True
 
+def _update_vskin_label(self, context):
+    # Turn off VSKIN picker when manually changing the value
+    # Don't turn off if the picker itself is updating the value
+    global _picker_updating_value
+    if not _picker_updating_value:
+        context.scene.ob2_vskin_pick = False
+
+def _update_tskin_label(self, context):
+    # Turn off TSKIN picker when manually changing the value
+    # Don't turn off if the picker itself is updating the value
+    global _picker_updating_value
+    if not _picker_updating_value:
+        context.scene.ob2_tskin_pick = False
+
+def _update_pri_label(self, context):
+    # Turn off PRI picker when manually changing the value
+    # Don't turn off if the picker itself is updating the value
+    global _picker_updating_value
+    if not _picker_updating_value:
+        context.scene.ob2_pri_pick = False
+
+def _update_alpha_label(self, context):
+    # Turn off ALPHA picker when manually changing the value
+    # Don't turn off if the picker itself is updating the value
+    global _picker_updating_value
+    if not _picker_updating_value:
+        context.scene.ob2_alpha_pick = False
+
 def register():
 
     for cls in classes:
@@ -779,6 +860,7 @@ def register():
         default=0,
         soft_min=0,
         soft_max=255,
+        update=_update_vskin_label
     )
 
     bpy.types.Scene.ob2_tskin_label = IntProperty(
@@ -787,6 +869,7 @@ def register():
         default=0,
         soft_min=0,
         soft_max=255,
+        update=_update_tskin_label
     )
 
     bpy.types.Scene.ob2_pri_label = IntProperty(
@@ -795,6 +878,7 @@ def register():
         default=0,
         soft_min=0,
         soft_max=255,
+        update=_update_pri_label
     )
 
     bpy.types.Scene.ob2_alpha_label = IntProperty(
@@ -803,6 +887,7 @@ def register():
         default=0,
         soft_min=0,
         soft_max=255,
+        update=_update_alpha_label
     )
 
     bpy.types.Scene.ob2_vskin_pick = BoolProperty(

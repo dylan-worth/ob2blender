@@ -18,6 +18,7 @@ def read_mesh(filepath):
 def load(self):
     mesh = read_mesh(self.filepath)
     create_blender_mesh(mesh, self.filepath)
+    bpy.ops.ed.undo_push(message=f"Import model from {os.path.basename(self.filepath)}")
     return {"FINISHED"}
 
 def create_blender_mesh(rs_mesh, filepath):
@@ -27,14 +28,29 @@ def create_blender_mesh(rs_mesh, filepath):
     # since it's runescapes XYZ is different, and y axis inverted?? or maybe not
     vertices = [(rs_mesh.vertices_x[i], rs_mesh.vertices_z[i], -rs_mesh.vertices_y[i]) for i in range(rs_mesh.vertex_count)]
 
-    # Set faces
-    faces = [(rs_mesh.face_indices_a[i], rs_mesh.face_indices_b[i], rs_mesh.face_indices_c[i]) for i in
-             range(rs_mesh.face_count)]
+    # Set faces and filter out degenerate faces (where 2+ vertices are the same)
+    faces = []
+    face_index_map = []  # Maps new face index to original face index
+    degenerate_count = 0
     
-    # Set the mesh data
-    # validate/filter faces before passing to Blender
-    valid_faces = validate_and_filter_faces(rs_mesh, vertices, faces)
-    blender_mesh.from_pydata(vertices, [], valid_faces)
+    for i in range(rs_mesh.face_count):
+        a = rs_mesh.face_indices_a[i]
+        b = rs_mesh.face_indices_b[i]
+        c = rs_mesh.face_indices_c[i]
+        
+        # Skip degenerate faces (where any two vertices are the same)
+        if a == b or b == c or a == c:
+            print(f"Skipping degenerate face {i}: ({a}, {b}, {c})")
+            degenerate_count += 1
+            continue
+        
+        faces.append((a, b, c))
+        face_index_map.append(i)
+    
+    if degenerate_count > 0:
+        print(f"Filtered out {degenerate_count} degenerate faces. {len(faces)} valid faces remaining.")
+    
+    blender_mesh.from_pydata(vertices, [], faces)
     blender_mesh.update()
 
 
@@ -44,13 +60,14 @@ def create_blender_mesh(rs_mesh, filepath):
     
 
     #now assign colors, and handle if both color and texture exist.
-    create_or_get_material(rs_mesh, blender_mesh) #runescape colors are stored as HSL16 values
+    create_or_get_material(rs_mesh, blender_mesh, face_index_map) #runescape colors are stored as HSL16 values
     #the following is just to set the proper shading, referring to face_draw_types again.
     use_draw_types = rs_mesh.face_draw_types
     if use_draw_types:
-        for i, poly in enumerate(blender_mesh.polygons):
+        for blender_face_idx, poly in enumerate(blender_mesh.polygons):
+            original_face_idx = face_index_map[blender_face_idx]
             # The last bit (bit 0) of face_draw_types determines shading: 0 = smooth, 1 = flat
-            poly.use_smooth = (use_draw_types[i] & 1) == 0
+            poly.use_smooth = (use_draw_types[original_face_idx] & 1) == 0
     else:
         for i, poly in enumerate(blender_mesh.polygons):
             poly.use_smooth = True  # Default to all smooth shading if no draw types are provided.
@@ -81,33 +98,37 @@ def create_blender_mesh(rs_mesh, filepath):
         VSKIN = blender_mesh.attributes.new(name='VSKIN', type='INT', domain='POINT')
         VSKIN.data.foreach_set("value", VSKIN_values)
         
-    PRI_values = np.zeros(rs_mesh.face_count, dtype=np.int8)
+    # Use filtered face count (len(faces)) instead of rs_mesh.face_count
+    PRI_values = np.zeros(len(faces), dtype=np.int8)
     if rs_mesh.face_priorities: #per-face priorities
-        for i in range(rs_mesh.face_count):
-            PRI_values[i] = rs_mesh.face_priorities[i]
+        for blender_face_idx in range(len(faces)):
+            original_face_idx = face_index_map[blender_face_idx]
+            PRI_values[blender_face_idx] = rs_mesh.face_priorities[original_face_idx]
     else: #model-wide priority
-        for i in range(rs_mesh.face_count):
-            PRI_values[i] = rs_mesh.model_priority #e.g. if model priority is 2, all faces get 2
+        for blender_face_idx in range(len(faces)):
+            PRI_values[blender_face_idx] = rs_mesh.model_priority #e.g. if model priority is 2, all faces get 2
     PRI = blender_mesh.attributes.new(name='PRI', type='INT', domain='FACE')
     PRI.data.foreach_set("value", PRI_values)
 
     if rs_mesh.face_labels: #TSKIN, face labels
-        TSKIN_values = np.zeros(rs_mesh.face_count, dtype=np.int8)
-        for i in range(rs_mesh.face_count):
-            TSKIN_values[i] = rs_mesh.face_labels[i]
+        TSKIN_values = np.zeros(len(faces), dtype=np.int8)
+        for blender_face_idx in range(len(faces)):
+            original_face_idx = face_index_map[blender_face_idx]
+            TSKIN_values[blender_face_idx] = rs_mesh.face_labels[original_face_idx]
         TSKIN = blender_mesh.attributes.new(name='TSKIN', type='INT', domain='FACE')
         TSKIN.data.foreach_set("value", TSKIN_values)
 
     if rs_mesh.face_alphas: #runescape doesn't do alpha by material, but by face.
         ALPHA = blender_mesh.attributes.new(name='ALPHA', type='INT', domain='FACE')
-        ALPHA_values = np.zeros(rs_mesh.face_count, dtype=np.int8)
-        for i in range(rs_mesh.face_count):
-            ALPHA_values[i] = rs_mesh.face_alphas[i]
+        ALPHA_values = np.zeros(len(faces), dtype=np.int8)
+        for blender_face_idx in range(len(faces)):
+            original_face_idx = face_index_map[blender_face_idx]
+            ALPHA_values[blender_face_idx] = rs_mesh.face_alphas[original_face_idx]
         ALPHA.data.foreach_set("value", ALPHA_values)
 
     return obj
 
-def create_or_get_material(rs_mesh, blender_mesh):
+def create_or_get_material(rs_mesh, blender_mesh, face_index_map):
     if rs_mesh.face_indices_a and rs_mesh.face_indices_b and rs_mesh.face_indices_c: #sanity check
         
         mesh = blender_mesh
@@ -117,8 +138,10 @@ def create_or_get_material(rs_mesh, blender_mesh):
         hsl_cache = []  
         rgba_cache = []    # paired because one HSL corresponds to one RGBA
 
-        for face in range(rs_mesh.face_count):
-            face_color = rs_mesh.face_colors[face]
+        # Iterate through Blender faces (filtered), map to original RS face indices
+        for blender_face_idx in range(len(mesh.polygons)):
+            original_face_idx = face_index_map[blender_face_idx]
+            face_color = rs_mesh.face_colors[original_face_idx]
             if face_color not in hsl_cache:
                 H = (face_color >> 10) & 0x3F
                 S = (face_color >> 7) & 0x07
@@ -132,10 +155,10 @@ def create_or_get_material(rs_mesh, blender_mesh):
                 rgba = rgba_cache[hsl_cache.index(face_color)]
 
             # Detect textured faces
-            has_texture = bool(rs_mesh.face_draw_types) and (rs_mesh.face_draw_types[face] >> 1) & 1
+            has_texture = bool(rs_mesh.face_draw_types) and (rs_mesh.face_draw_types[original_face_idx] >> 1) & 1
 
             if has_texture:
-                texture_id = rs_mesh.face_colors[face]
+                texture_id = rs_mesh.face_colors[original_face_idx]
 
                 # texture_id = 37 #temp override for testing
                 key = (texture_id, face_color)
@@ -166,15 +189,15 @@ def create_or_get_material(rs_mesh, blender_mesh):
                     combo_cache.append(key)
 
                 mat_index = combo_cache.index(key)
-                mesh.polygons[face].material_index = mat_index
+                mesh.polygons[blender_face_idx].material_index = mat_index
                 # Ensure UV layer exists
                 if not mesh.uv_layers:
                     mesh.uv_layers.new(name="UVMap")
                 uv_layer = mesh.uv_layers.active.data
 
-                # Get UVs from p, m, n coordinates
-                uvs = get_uv_from_pmn(rs_mesh, face)
-                poly = mesh.polygons[face]
+                # Get UVs from p, m, n coordinates (using original face index)
+                uvs = get_uv_from_pmn(rs_mesh, original_face_idx)
+                poly = mesh.polygons[blender_face_idx]
                 for loop_idx, (u, v) in zip(poly.loop_indices, zip(uvs[0], uvs[1])):
                     uv_layer[loop_idx].uv = (u, v)
 
@@ -183,7 +206,7 @@ def create_or_get_material(rs_mesh, blender_mesh):
             else:
                 key = (-1, face_color)
                 if key not in combo_cache:
-                    mat_name = f"H{H}_S{S}_L{L}"
+                    mat_name = f"HSL_{face_color}"
                     mat = bpy.data.materials.new(mat_name)
                     mat.diffuse_color = rgba
                     # keep nodes enabled for consistency with above.
@@ -206,7 +229,7 @@ def create_or_get_material(rs_mesh, blender_mesh):
                     combo_cache.append(key)
 
                 mat_index = combo_cache.index(key)
-                mesh.polygons[face].material_index = mat_index
+                mesh.polygons[blender_face_idx].material_index = mat_index
 
 
 def get_uv_from_pmn(rs_mesh, i):
@@ -269,26 +292,3 @@ def get_uv_from_pmn(rs_mesh, i):
 
     # Return as two lists: ([u0, u1, u2], [v0, v1, v2])
     return [float(uv0[0]), float(uv1[0]), float(uv2[0])], [float(uv0[1]), float(uv1[1]), float(uv2[1])]
-
-def validate_and_filter_faces(rs_mesh, vertices, faces):
-    vc = rs_mesh.vertex_count
-    # basic sanity
-    if vc <= 0:
-        raise ValueError("vertex_count is zero or negative")
-    if len(vertices) != vc:
-        raise ValueError(f"vertices length mismatch: got {len(vertices)}, expected {vc}")
-    if len(faces) != rs_mesh.face_count:
-        print(f"Warning: face_count mismatch: expected {rs_mesh.face_count}, got {len(faces)}")
-
-    # diagnostics
-    all_idx = [i for tri in faces for i in tri]
-    max_idx = max(all_idx) if all_idx else -1
-    min_idx = min(all_idx) if all_idx else -1
-    print(f"Vertices: {vc}, Faces: {len(faces)}, index range in faces: {min_idx}..{max_idx}")
-
-    # filter invalid faces
-    valid_faces = [tuple(int(i) for i in tri) for tri in faces if all(isinstance(i, (int,)) and 0 <= i < vc for i in tri)]
-    dropped = len(faces) - len(valid_faces)
-    if dropped:
-        print(f"Dropped {dropped} invalid faces (indices out of range or non-integer).")
-    return valid_faces

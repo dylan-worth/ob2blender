@@ -256,6 +256,10 @@ class RunescapeMesh: #todo: recreate this for all parameters in 244-type models 
                 self.face_indices_a[face] = a
                 self.face_indices_b[face] = b
                 self.face_indices_c[face] = c
+            
+            # Check for degenerate faces (duplicate vertex indices)
+            if a == b or b == c or a == c:
+                print(f"WARNING: Degenerate face {face} with indices ({a}, {b}, {c}) - opcode {opcode}")
 
         buffer_indices.set_pos(textured_face_offset)
         for face in range(textured_face_count):
