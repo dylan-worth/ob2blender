@@ -78,6 +78,7 @@ def assemble_ob2(blender_mesh):
         face_labels = []  #TSKIN
 
         textured_face_count = 0
+        invalid_textured_face_count = 0
         texture_coords_p = []  # p
         texture_coords_m = []  # m
         texture_coords_n = []  # n
@@ -105,7 +106,7 @@ def assemble_ob2(blender_mesh):
         face_count, face_opcodes, face_deltas = encode_face_indices(blender_mesh)
         face_colors = encode_face_colors_and_textures(blender_mesh)
 
-        has_face_info, face_draw_types, textured_face_count, texture_coords_p, texture_coords_m, texture_coords_n = encode_face_draw_types(blender_mesh)
+        has_face_info, face_draw_types, textured_face_count, texture_coords_p, texture_coords_m, texture_coords_n, invalid_textured_face_count, pmn_index_overflow_face_count = encode_face_draw_types(blender_mesh)
         face_priorities, face_alphas, face_labels, has_priority, has_alpha, has_face_labels = encode_face_pris_alphas_labels(blender_mesh, face_count)
         #Flip vertices back now that we are done.
         for v in blender_mesh.vertices:
@@ -122,10 +123,10 @@ def assemble_ob2(blender_mesh):
         # print(f"Face alphas: {len(face_alphas)} {face_alphas}")
         # print(f"Vertex labels: {len(vertex_labels)} {vertex_labels}")
         # print(f"Face labels: {len(face_labels)} {face_labels}")
-        print(f"Face colors: {len(face_colors)} {face_colors}")
-        print(f"Texture coords P: {len(texture_coords_p)} {texture_coords_p}")
-        print(f"Texture coords M: {len(texture_coords_m)} {texture_coords_m}")
-        print(f"Texture coords N: {len(texture_coords_n)} {texture_coords_n}")
+        #print(f"Face colors: {len(face_colors)} {face_colors}")
+        #print(f"Texture coords P: {len(texture_coords_p)} {texture_coords_p}")
+        #print(f"Texture coords M: {len(texture_coords_m)} {texture_coords_m}")
+        #print(f"Texture coords N: {len(texture_coords_n)} {texture_coords_n}")
         # print(f"Delta X: {len(delta_x)} {delta_x}")
         # print(f"Delta Y: {len(delta_y)} {delta_y}")
         # print(f"Delta Z: {len(delta_z)} {delta_z}")
@@ -174,7 +175,7 @@ def assemble_ob2(blender_mesh):
                 ob2writer.put_short(int(texture_coords_p[windex]))
                 ob2writer.put_short(int(texture_coords_m[windex]))
                 ob2writer.put_short(int(texture_coords_n[windex]))
-            print("position after texture coords:", ob2writer.position)
+            #print("position after texture coords:", ob2writer.position)
         pos = ob2writer.position
         for dx in delta_x:
             ob2writer.put_signed_smart(int(dx))
@@ -194,7 +195,7 @@ def assemble_ob2(blender_mesh):
         ob2writer.put_short(int(vertex_count))
         ob2writer.put_short(int(face_count))
         ob2writer.put_byte(int(textured_face_count))
-        print("textured_face_count:", textured_face_count)
+        #print("textured_face_count:", textured_face_count)
         ob2writer.put_byte(int(has_face_info))
         ob2writer.put_byte(int(has_priority))
         ob2writer.put_byte(int(has_alpha))
@@ -204,7 +205,13 @@ def assemble_ob2(blender_mesh):
         ob2writer.put_short(int(total_y))
         ob2writer.put_short(int(total_z))
         ob2writer.put_short(int(total_facedelta))
-        print("position after footer:", ob2writer.position)
+        #print("position after footer:", ob2writer.position)
+
+        if invalid_textured_face_count > 0:
+            print(f"Warning: {invalid_textured_face_count} textured face(s) had invalid PMN indices and were exported with PMN index 0.")
+        if pmn_index_overflow_face_count > 0:
+            print(f"Warning: {pmn_index_overflow_face_count} textured face(s) exceeded the 64-entry PMN mapping limit and were exported with PMN mapping index 0.")
+
         #set length to current position
         ob2writer.length = ob2writer.position
         return ob2writer.getData()   
@@ -367,12 +374,12 @@ def encode_face_colors_and_textures(blender_mesh):
                 else:
                     rgb = blender_mesh.materials[face.material_index].diffuse_color
                     #Convert RGB to HSL16 - 6 bits for H, 3 bits for S, 7 bits for L
-                    print("Converting RGB to HSL for material index", face.material_index, "rgb:", rgb[0], rgb[1], rgb[2])
+                    #print("Converting RGB to HSL for material index", face.material_index, "rgb:", rgb[0], rgb[1], rgb[2])
                     (H, L, S) = colorsys.rgb_to_hls(rgb[0], rgb[1], rgb[2])
                 color = ((round(H * 63.0) & 0x3F) << 10) | ((round(S * 7.0) & 0x07) << 7) | (round(L * 127.0) & 0x7F) & 0xFFFF
             mat_code_equivalent.append(color)
             mat_export_cache.append(face.material_index)
-            print("Appended color:", color, "for material index", face.material_index)
+            #print("Appended color:", color, "for material index", face.material_index)
         #print(f"Face {face.index} material index: {face.material_index}, color: {mat_code_equivalent[mat_export_cache.index(face.material_index)]}")
         face_color = mat_code_equivalent[mat_export_cache.index(face.material_index)]
         face_colors.append(face_color)
@@ -383,6 +390,9 @@ def encode_face_draw_types(blender_mesh):
 
     textured_face_count = 0
     textured_face_holder = [] #indices for textured faces that will be used to map to pmn values.
+    invalid_textured_face_count = 0
+    pmn_index_overflow_face_count = 0
+    max_pmn_mapping_entries = 64
 
     #check if any meshes use flat shading or have a texture - the has_face_info flag must be set if so.
     has_face_info = False
@@ -398,57 +408,61 @@ def encode_face_draw_types(blender_mesh):
                 # Assign PMN index (for simplicity, using face index)
                 textured_face_holder.append(i)
 
-        tuple_library = [] #list of unique PMN tuples that are sometimes shared between faces.
-        #the integer index of tuple_library will be used for face_draw_types.
-        for face in textured_face_holder: #face here is the index of the face in blender_mesh.polygons
-            # Get the polygon (face) object
-            poly = blender_mesh.polygons[face]
-            # Get the loop indices for the face's vertices
-            loop_indices = poly.loop_indices
-            # Extract UVs for each vertex of the face
-            uvs = [blender_mesh.uv_layers.active.data[i].uv for i in loop_indices]
-            # Prepare UVs as tuples for PMN calculation
-            u = [uv[0] for uv in uvs]
-            v = [uv[1] for uv in uvs]
-            PMNtuple = uv_to_pmn(u, v, blender_mesh, face)
-            if not any((np.array(PMNtuple) == np.array(t)).all() for t in tuple_library):
-                tuple_library.append(PMNtuple)
-            # Find the exact matching tuple (order and values) and append its index
-            for idx, t in enumerate(tuple_library):
-                if len(PMNtuple) == 3 and len(t) == 3 and all(np.array_equal(PMNtuple[i], t[i]) for i in range(3)):
-                    face_draw_types[face] |= (idx << 2)  # Store PMN index in higher 6 bits
-                    break
+        pmn_attr = blender_mesh.attributes.get('PMN')
+        vertex_count = len(blender_mesh.vertices)
+
+        tuple_library = []  # unique PMN index tuples shared between textured faces
+        tuple_to_index = {}
+
+        for face in textured_face_holder:
+            pmn_tuple = (0, 0, 0)
+
+            if pmn_attr is not None and face < len(pmn_attr.data):
+                try:
+                    vec = pmn_attr.data[face].vector
+                    p_idx = int(round(float(vec[0])))
+                    m_idx = int(round(float(vec[1])))
+                    n_idx = int(round(float(vec[2])))
+
+                    valid = (
+                        0 <= p_idx < vertex_count
+                        and 0 <= m_idx < vertex_count
+                        and 0 <= n_idx < vertex_count
+                    )
+                    if valid:
+                        pmn_tuple = (p_idx, m_idx, n_idx)
+                    else:
+                        invalid_textured_face_count += 1
+                except Exception:
+                    invalid_textured_face_count += 1
+            else:
+                invalid_textured_face_count += 1
+
+            if pmn_tuple in tuple_to_index:
+                pmn_mapping_index = tuple_to_index[pmn_tuple]
+            elif len(tuple_library) < max_pmn_mapping_entries:
+                pmn_mapping_index = len(tuple_library)
+                tuple_to_index[pmn_tuple] = pmn_mapping_index
+                tuple_library.append(pmn_tuple)
+            else:
+                pmn_index_overflow_face_count += 1
+                pmn_mapping_index = 0
+
+            face_draw_types[face] |= (pmn_mapping_index << 2)
 
         texture_coords_p = []  # p
         texture_coords_m = []  # m
         texture_coords_n = []  # n
 
-        def find_closest_vertex(point):
-            closest_index = None
-            closest_dist = float('inf')
-            for v in blender_mesh.vertices:
-                dist = (v.co.x - point[0])**2 + (v.co.y - point[1])**2 + (v.co.z - point[2])**2
-                if dist < closest_dist:
-                    closest_dist = dist
-                    closest_index = v.index
-            return closest_index
-        
-        for tuple in tuple_library:
-            p, m, n = tuple
-            #p, m, n are all tuples representing a point in 3D space. We need to find the nearest vertex index in the mesh for each.
-            #one list for p, one list for m, one list for n.
-            pmn_index = []
-            for point in (p, m, n):
-                closest_vertex = find_closest_vertex(point)
-                pmn_index.append(closest_vertex)
+        for pmn_tuple in tuple_library:
             textured_face_count += 1
-            texture_coords_p.append(pmn_index[0])
-            texture_coords_m.append(pmn_index[1])
-            texture_coords_n.append(pmn_index[2])
+            texture_coords_p.append(int(pmn_tuple[0]))
+            texture_coords_m.append(int(pmn_tuple[1]))
+            texture_coords_n.append(int(pmn_tuple[2]))
 
-        return has_face_info, face_draw_types, textured_face_count, texture_coords_p, texture_coords_m, texture_coords_n
+        return has_face_info, face_draw_types, textured_face_count, texture_coords_p, texture_coords_m, texture_coords_n, invalid_textured_face_count, pmn_index_overflow_face_count
     else:
-        return has_face_info, [], 0, [], [], [] #default empty lists if no face info
+        return has_face_info, [], 0, [], [], [], 0, 0 #default empty lists if no face info
 
 def encode_face_pris_alphas_labels(blender_mesh, face_count):
     face_priorities = [] #PRI

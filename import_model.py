@@ -3,6 +3,7 @@ import bpy
 import colorsys
 import numpy as np
 from ob2blender.runescape_mesh import RunescapeMesh
+from . import pmn_uv
 
 
 def read_mesh(filepath):
@@ -126,6 +127,24 @@ def create_blender_mesh(rs_mesh, filepath):
             ALPHA_values[blender_face_idx] = rs_mesh.face_alphas[original_face_idx]
         ALPHA.data.foreach_set("value", ALPHA_values)
 
+    # PMN stores per-face texture coordinate vertex indices (P, M, N) as float vector data.
+    # Only textured faces should carry non-zero values.
+    if rs_mesh.textured_face_count > 0:
+        PMN = blender_mesh.attributes.new(name='PMN', type='FLOAT_VECTOR', domain='FACE')
+        PMN_values = np.zeros((len(faces), 3), dtype=np.float32)
+        for blender_face_idx in range(len(faces)):
+            original_face_idx = face_index_map[blender_face_idx]
+            coord_index = -1
+            if rs_mesh.texture_coord_indices and original_face_idx < len(rs_mesh.texture_coord_indices):
+                coord_index = rs_mesh.texture_coord_indices[original_face_idx]
+
+            if 0 <= coord_index < len(rs_mesh.texture_coords_p):
+                PMN_values[blender_face_idx][0] = float(rs_mesh.texture_coords_p[coord_index])
+                PMN_values[blender_face_idx][1] = float(rs_mesh.texture_coords_m[coord_index])
+                PMN_values[blender_face_idx][2] = float(rs_mesh.texture_coords_n[coord_index])
+
+        PMN.data.foreach_set("vector", PMN_values.ravel())
+
     return obj
 
 def create_or_get_material(rs_mesh, blender_mesh, face_index_map):
@@ -176,6 +195,9 @@ def create_or_get_material(rs_mesh, blender_mesh, face_index_map):
                     output_node = nodes.new(type='ShaderNodeOutputMaterial')
                     bsdf_node = nodes.new(type='ShaderNodeBsdfPrincipled')
                     tex_node = nodes.new(type='ShaderNodeTexImage')
+
+                    links.new(tex_node.outputs['Color'], bsdf_node.inputs['Base Color'])
+                    links.new(bsdf_node.outputs['BSDF'], output_node.inputs['Surface'])
 
                     # load image if available (reuse existing image if loaded)
                     texture_path = os.path.join(os.path.dirname(__file__), "textures", f"{texture_id}.png")
@@ -255,40 +277,10 @@ def get_uv_from_pmn(rs_mesh, i):
                 rs_mesh.vertices_y[rs_mesh.texture_coords_n[coordinate]],
                 rs_mesh.vertices_z[rs_mesh.texture_coords_n[coordinate]]])
 
-    print("import_model.py: Calculating UVs for face", i, "with PMN coords:", p, m, n)
-    f1 = m - p
-    f2 = n - p
+    # print("import_model.py: Calculating UVs for face", i, "with PMN coords:", p, m, n)
+    uvs = pmn_uv.project_triangle_uv_from_pmn(a, b, c, p, m, n)
+    if uvs is None:
+        print("PMN triangle is degenerate (determinant is zero). Returning zero UVs.")
+        return [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]
 
-    f1DotF1 = np.dot(f1, f1)
-    f1DotF2 = np.dot(f1, f2)
-    f2DotF2 = np.dot(f2, f2)
-    print("import_model.py: PMN triangle dot products:", f1DotF1, f1DotF2, f2DotF2)
-
-    det = (f1DotF1 * f2DotF2) - (f1DotF2 * f1DotF2)
-    print("import_model.py: PMN triangle determinant:", det)
-    if det == 0:
-        print("PMN triangle is degenerate (determinant is zero). Defaulting det to 1.")
-        det = 1
-
-    invDet = 1.0 / det
-
-    # Inverse of the Gram matrix
-    inverse = np.array([
-        [f2DotF2 * invDet, -f1DotF2 * invDet],
-        [-f1DotF2 * invDet, f1DotF1 * invDet]
-    ])
-
-    pA = a - p
-    pB = b - p
-    pC = c - p
-
-    projectionA = np.array([np.dot(f1, pA), np.dot(f2, pA)])
-    projectionB = np.array([np.dot(f1, pB), np.dot(f2, pB)])
-    projectionC = np.array([np.dot(f1, pC), np.dot(f2, pC)])
-
-    uv0 = inverse @ projectionA
-    uv1 = inverse @ projectionB
-    uv2 = inverse @ projectionC
-
-    # Return as two lists: ([u0, u1, u2], [v0, v1, v2])
-    return [float(uv0[0]), float(uv1[0]), float(uv2[0])], [float(uv0[1]), float(uv1[1]), float(uv2[1])]
+    return [uvs[0][0], uvs[1][0], uvs[2][0]], [uvs[0][1], uvs[1][1], uvs[2][1]]

@@ -7,7 +7,7 @@ def to_signed_byte(value):
         value -= 256
     return value
 
-class RunescapeMesh: #todo: recreate this for all parameters in 244-type models based on model.ts (typescript) from Lost-City
+class RunescapeMesh:
     def __init__(self):
 
         self.vertex_count = 0
