@@ -1,4 +1,5 @@
-<img width="969" height="524" alt="image" src="https://github.com/user-attachments/assets/f26a9666-e021-4a4f-b4f3-19db8c7dc47f" />
+<img width="1108" height="737" alt="image" src="https://github.com/user-attachments/assets/b10e3491-6938-436b-9a97-88b7a12ce6aa" />
+
 
 ## Description
 This add-on allows you to import, edit and export old format RuneScape models (.ob2 and .dat) all within Blender!
